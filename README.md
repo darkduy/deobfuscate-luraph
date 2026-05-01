@@ -1,22 +1,17 @@
-# Luraph Deobfuscation Tool
+# Luraph Deobfuscator (Python -> 1 Luau file)
 
-Script `deobfuscate_luraph.py` là công cụ hỗ trợ deobfuscate cho file được protect bằng Luraph.
-
-## Tính năng
-- Phát hiện chữ ký Luraph trong file `.lua/.luau`.
-- Tự động tách payload đã encode.
-- Decode payload theo block 5 ký tự (kiểu base85 thường thấy trong nhiều version Luraph).
-- Trích xuất chuỗi printable để hỗ trợ reverse.
+Đúng theo yêu cầu: tool viết bằng **Python** và output ra **một file code Luau duy nhất**.
 
 ## Cách dùng
 ```bash
-python3 deobfuscate_luraph.py main.luau -o out
+python3 deobfuscate_luraph.py main.luau -o deobfuscated.luau
 ```
 
 ## Kết quả
-Thư mục output gồm:
-- `payload.txt`: payload mã hoá thô.
-- `decoded.bin`: bytes sau khi decode bước đầu.
-- `strings.txt`: string printable tìm thấy trong `decoded.bin`.
+- Sinh ra `deobfuscated.luau`.
+- File này chứa:
+  - `original_source` (script gốc đã bỏ header Luraph),
+  - `recovered.decoded_hex` (payload decode bước đầu),
+  - danh sách printable strings (comment preview) để reverse nhanh.
 
-> Lưu ý: đây là **bootstrap tool** để phục vụ quá trình reverse, chưa phải full VM devirtualizer cho mọi mẫu Luraph.
+> Đây là best-effort deobfuscation để gom dữ liệu reverse vào 1 file Luau, chưa phải full VM devirtualizer.

@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
-"""Simple Luraph deobfuscation helper.
+"""Deobfuscate Luraph script to a single Luau output file.
 
-This tool does not fully emulate Lua VM, but it automates the first steps:
-1) Detect Luraph-protected files.
-2) Extract the encoded payload after `]=]`.
-3) Decode common Luraph base-36 chunks into bytes when possible.
-4) Dump readable strings and save decoded blobs for further reversing.
+Goal requested by user: produce ONE .luau file as output.
+This script performs best-effort static deobfuscation:
+- strips Luraph header comments
+- extracts and decodes long embedded payload strings (base85-like blocks)
+- extracts printable strings from decoded bytes
+- writes one luau file containing recovered artifacts + runnable stub
+
+Usage:
+  python3 deobfuscate_luraph.py input.luau -o deobfuscated.luau
 """
 
 from __future__ import annotations
@@ -14,98 +18,92 @@ import argparse
 import re
 from pathlib import Path
 
-HEADER_RE = re.compile(r"Luraph Obfuscator", re.IGNORECASE)
-PAYLOAD_RE = re.compile(r"\]=\]\s*;", re.MULTILINE)
-CHUNK_RE = re.compile(r"[!-z]{5}")
+HEADER_RE = re.compile(r"^\s*--\s*This file was protected using Luraph.*$", re.IGNORECASE | re.MULTILINE)
+LONG_STR_RE = re.compile(r'"([^"\\]|\\.){120,}"', re.DOTALL)
 
 
-def is_luraph(text: str) -> bool:
-    return bool(HEADER_RE.search(text))
-
-
-def extract_payload(text: str) -> str:
-    """Get the big encoded section that Luraph injects near the tail."""
-    # Heuristic: the largest quote-heavy region before the `]=];if ...` gate.
-    pivot = text.find("]=];if")
-    if pivot == -1:
-        pivot = len(text)
-    head = text[:pivot]
-    # Find the last long quoted segment.
-    matches = list(re.finditer(r'"([^"\\]|\\.){100,}"', head, re.DOTALL))
-    if not matches:
-        return ""
-    raw = matches[-1].group(0)
-    return raw[1:-1]
-
-
-def decode_base36_block(block: str) -> bytes:
-    """Decode 5-char base-85-like groups used in many Luraph generations."""
+def decode_base85_like(block: str) -> bytes:
     out = bytearray()
-    for i in range(0, len(block) - len(block) % 5, 5):
-        chunk = block[i : i + 5]
+    usable = len(block) - (len(block) % 5)
+    for i in range(0, usable, 5):
         val = 0
+        chunk = block[i : i + 5]
         for ch in chunk:
             val = val * 85 + (ord(ch) - 33)
-        out.extend([(val >> 24) & 0xFF, (val >> 16) & 0xFF, (val >> 8) & 0xFF, val & 0xFF])
+        out.extend(((val >> 24) & 0xFF, (val >> 16) & 0xFF, (val >> 8) & 0xFF, val & 0xFF))
     return bytes(out)
 
 
-def printable_ratio(data: bytes) -> float:
-    if not data:
-        return 0.0
-    printable = sum(1 for b in data if 32 <= b <= 126 or b in (9, 10, 13))
-    return printable / len(data)
-
-
-def dump_strings(data: bytes, min_len: int = 4) -> list[str]:
-    s = []
-    cur = []
+def printable_strings(data: bytes, min_len: int = 4) -> list[str]:
+    out: list[str] = []
+    cur: list[str] = []
     for b in data:
         if 32 <= b <= 126:
             cur.append(chr(b))
         else:
             if len(cur) >= min_len:
-                s.append("".join(cur))
-            cur = []
+                out.append("".join(cur))
+            cur.clear()
     if len(cur) >= min_len:
-        s.append("".join(cur))
-    return s
+        out.append("".join(cur))
+    return out
+
+
+def recover_payload(text: str) -> str:
+    cands = [m.group(0)[1:-1] for m in LONG_STR_RE.finditer(text)]
+    if not cands:
+        return ""
+    return max(cands, key=len)
+
+
+def build_output_luau(original: str, payload: str, decoded: bytes, strings: list[str]) -> str:
+    clean = HEADER_RE.sub("", original).strip()
+    safe_preview = "\n".join(f"-- {s}" for s in strings[:120])
+    hex_blob = decoded.hex()
+
+    return f"""-- Decompiled/Recovered from Luraph (best-effort)
+-- NOTE: This is NOT guaranteed full semantic deobfuscation.
+-- It is a single Luau file output as requested.
+
+-- Recovered printable strings preview:
+{safe_preview if safe_preview else '-- (none)'}
+
+local recovered = {{}}
+recovered.payload_len = {len(payload)}
+recovered.decoded_len = {len(decoded)}
+recovered.decoded_hex = [[{hex_blob}]]
+
+-- Original script body (header removed):
+local original_source = [==[
+{clean}
+]==]
+
+-- You can now continue manual reversing from `original_source`
+-- and `recovered.decoded_hex`.
+
+return {{
+    original_source = original_source,
+    recovered = recovered,
+}}
+"""
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Luraph deobfuscation bootstrap tool")
-    ap.add_argument("input", type=Path, help="Path to obfuscated .lua/.luau file")
-    ap.add_argument("-o", "--out", type=Path, default=Path("out"), help="Output directory")
+    ap = argparse.ArgumentParser(description="Luraph -> single Luau output (best-effort)")
+    ap.add_argument("input", type=Path)
+    ap.add_argument("-o", "--output", type=Path, default=Path("deobfuscated.luau"))
     args = ap.parse_args()
 
     text = args.input.read_text(encoding="utf-8", errors="ignore")
-    if not is_luraph(text):
-        print("[!] Input does not look like a Luraph-protected file.")
-        return 1
+    payload = recover_payload(text)
+    decoded = decode_base85_like(payload) if payload else b""
+    strings = printable_strings(decoded)
 
-    payload = extract_payload(text)
-    if not payload:
-        print("[!] Could not extract encoded payload automatically.")
-        return 2
+    out = build_output_luau(text, payload, decoded, strings)
+    args.output.write_text(out, encoding="utf-8")
 
-    args.out.mkdir(parents=True, exist_ok=True)
-    payload_path = args.out / "payload.txt"
-    payload_path.write_text(payload, encoding="utf-8")
-
-    decoded = decode_base36_block(payload)
-    decoded_path = args.out / "decoded.bin"
-    decoded_path.write_bytes(decoded)
-
-    ratio = printable_ratio(decoded)
-    strings = dump_strings(decoded)
-    strings_path = args.out / "strings.txt"
-    strings_path.write_text("\n".join(strings), encoding="utf-8")
-
-    print("[+] Luraph signature detected")
-    print(f"[+] Payload length: {len(payload):,} chars -> {payload_path}")
-    print(f"[+] Decoded length: {len(decoded):,} bytes -> {decoded_path}")
-    print(f"[+] Printable ratio: {ratio:.2%}")
-    print(f"[+] Extracted strings: {len(strings):,} -> {strings_path}")
+    print(f"[+] Wrote: {args.output}")
+    print(f"[+] payload_len={len(payload)} decoded_len={len(decoded)} strings={len(strings)}")
     return 0
 
 
