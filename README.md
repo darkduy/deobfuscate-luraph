@@ -1,17 +1,16 @@
-# Luraph Deobfuscator (Python -> 1 Luau file)
+# Luraph Deobfuscator (Python)
 
-Đúng theo yêu cầu: tool viết bằng **Python** và output ra **một file code Luau duy nhất**.
+Bạn đúng: mục tiêu là **deobfuscate ra code Luau** (không chỉ metadata).
 
-## Cách dùng
+Tool `deobfuscate_luraph.py` giờ sẽ tạo trực tiếp một file code `deobfuscated.luau` theo hướng readable:
+- Chuẩn hoá số hex/binary obfuscate (`0x`, `0b`, underscore) về số thập phân.
+- Decode escape string và re-encode gọn.
+- Format lại code (tách `;`, block `if/else/end`, indent nhẹ).
+- Bỏ header Luraph.
+
+## Dùng
 ```bash
 python3 deobfuscate_luraph.py main.luau -o deobfuscated.luau
 ```
 
-## Kết quả
-- Sinh ra `deobfuscated.luau`.
-- File này chứa:
-  - `original_source` (script gốc đã bỏ header Luraph),
-  - `recovered.decoded_hex` (payload decode bước đầu),
-  - danh sách printable strings (comment preview) để reverse nhanh.
-
-> Đây là best-effort deobfuscation để gom dữ liệu reverse vào 1 file Luau, chưa phải full VM devirtualizer.
+> Lưu ý: đây là **best-effort source deobfuscation**, chưa phải full devirtualization VM của Luraph.

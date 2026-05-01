@@ -1,109 +1,112 @@
 #!/usr/bin/env python3
-"""Deobfuscate Luraph script to a single Luau output file.
+"""Best-effort Luraph source deobfuscator -> real Luau code output.
 
-Goal requested by user: produce ONE .luau file as output.
-This script performs best-effort static deobfuscation:
-- strips Luraph header comments
-- extracts and decodes long embedded payload strings (base85-like blocks)
-- extracts printable strings from decoded bytes
-- writes one luau file containing recovered artifacts + runnable stub
+This script rewrites obfuscated Luau into a more readable Luau file by:
+- normalizing hex/binary numeric literals (including underscore-heavy forms)
+- decoding Lua escape sequences inside quoted strings
+- applying lightweight formatting (statement separators / indentation)
 
 Usage:
-  python3 deobfuscate_luraph.py input.luau -o deobfuscated.luau
+  python3 deobfuscate_luraph.py main.luau -o deobfuscated.luau
 """
 
 from __future__ import annotations
 
 import argparse
+import ast
 import re
 from pathlib import Path
 
+NUM_RE = re.compile(r"(?<![\w.])([+-]?)(0[xX][0-9A-Fa-f_]+|0[bB][01_]+)(?![\w.])")
+STR_RE = re.compile(r'"([^"\\]|\\.)*"')
 HEADER_RE = re.compile(r"^\s*--\s*This file was protected using Luraph.*$", re.IGNORECASE | re.MULTILINE)
-LONG_STR_RE = re.compile(r'"([^"\\]|\\.){120,}"', re.DOTALL)
 
 
-def decode_base85_like(block: str) -> bytes:
-    out = bytearray()
-    usable = len(block) - (len(block) % 5)
-    for i in range(0, usable, 5):
-        val = 0
-        chunk = block[i : i + 5]
-        for ch in chunk:
-            val = val * 85 + (ord(ch) - 33)
-        out.extend(((val >> 24) & 0xFF, (val >> 16) & 0xFF, (val >> 8) & 0xFF, val & 0xFF))
-    return bytes(out)
+def normalize_number_token(tok: str) -> str:
+    sign = ""
+    if tok[:1] in "+-":
+        sign, tok = tok[0], tok[1:]
+    body = tok.replace("_", "")
+    if body.lower().startswith("0x"):
+        n = int(body, 16)
+    elif body.lower().startswith("0b"):
+        n = int(body, 2)
+    else:
+        return sign + tok
+    return f"{sign}{n}"
 
 
-def printable_strings(data: bytes, min_len: int = 4) -> list[str]:
-    out: list[str] = []
-    cur: list[str] = []
-    for b in data:
-        if 32 <= b <= 126:
-            cur.append(chr(b))
-        else:
-            if len(cur) >= min_len:
-                out.append("".join(cur))
-            cur.clear()
-    if len(cur) >= min_len:
-        out.append("".join(cur))
-    return out
+def normalize_numbers(src: str) -> str:
+    return NUM_RE.sub(lambda m: normalize_number_token((m.group(1) or "") + m.group(2)), src)
 
 
-def recover_payload(text: str) -> str:
-    cands = [m.group(0)[1:-1] for m in LONG_STR_RE.finditer(text)]
-    if not cands:
-        return ""
-    return max(cands, key=len)
+def decode_lua_string_literal(s: str) -> str:
+    # decode standard escapes safely via python parser when possible
+    try:
+        decoded = ast.literal_eval(s)
+        if isinstance(decoded, str):
+            return decoded
+    except Exception:
+        pass
+    return s[1:-1]
 
 
-def build_output_luau(original: str, payload: str, decoded: bytes, strings: list[str]) -> str:
-    clean = HEADER_RE.sub("", original).strip()
-    safe_preview = "\n".join(f"-- {s}" for s in strings[:120])
-    hex_blob = decoded.hex()
+def reencode_lua_string(s: str) -> str:
+    s = s.replace('\\', '\\\\').replace('"', '\\"')
+    s = s.replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
+    return f'"{s}"'
 
-    return f"""-- Decompiled/Recovered from Luraph (best-effort)
--- NOTE: This is NOT guaranteed full semantic deobfuscation.
--- It is a single Luau file output as requested.
 
--- Recovered printable strings preview:
-{safe_preview if safe_preview else '-- (none)'}
+def normalize_strings(src: str) -> str:
+    def _sub(m: re.Match[str]) -> str:
+        lit = m.group(0)
+        return reencode_lua_string(decode_lua_string_literal(lit))
 
-local recovered = {{}}
-recovered.payload_len = {len(payload)}
-recovered.decoded_len = {len(decoded)}
-recovered.decoded_hex = [[{hex_blob}]]
+    return STR_RE.sub(_sub, src)
 
--- Original script body (header removed):
-local original_source = [==[
-{clean}
-]==]
 
--- You can now continue manual reversing from `original_source`
--- and `recovered.decoded_hex`.
+def lightweight_format(src: str) -> str:
+    src = src.replace(";", ";\n")
+    src = re.sub(r"\belse\b", "\nelse\n", src)
+    src = re.sub(r"\bend\b", "\nend\n", src)
+    src = re.sub(r"\n{3,}", "\n\n", src)
 
-return {{
-    original_source = original_source,
-    recovered = recovered,
-}}
-"""
+    lines = []
+    indent = 0
+    for raw in src.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        if line.startswith("end") or line.startswith("else") or line.startswith("until"):
+            indent = max(0, indent - 1)
+        lines.append(("    " * indent) + line)
+        if re.search(r"\b(function|then|do|repeat)\b", line) and not line.startswith("end"):
+            indent += 1
+        if line.startswith("else"):
+            indent += 1
+    return "\n".join(lines) + "\n"
+
+
+def deobfuscate(src: str) -> str:
+    src = HEADER_RE.sub("", src)
+    src = normalize_numbers(src)
+    src = normalize_strings(src)
+    src = lightweight_format(src)
+    banner = "-- deobfuscated (best-effort readable Luau)\n"
+    return banner + src
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Luraph -> single Luau output (best-effort)")
+    ap = argparse.ArgumentParser()
     ap.add_argument("input", type=Path)
     ap.add_argument("-o", "--output", type=Path, default=Path("deobfuscated.luau"))
     args = ap.parse_args()
 
-    text = args.input.read_text(encoding="utf-8", errors="ignore")
-    payload = recover_payload(text)
-    decoded = decode_base85_like(payload) if payload else b""
-    strings = printable_strings(decoded)
-
-    out = build_output_luau(text, payload, decoded, strings)
+    source = args.input.read_text(encoding="utf-8", errors="ignore")
+    out = deobfuscate(source)
     args.output.write_text(out, encoding="utf-8")
 
-    print(f"[+] Wrote: {args.output}")
-    print(f"[+] payload_len={len(payload)} decoded_len={len(decoded)} strings={len(strings)}")
+    print(f"[+] wrote {args.output}")
     return 0
 
 
