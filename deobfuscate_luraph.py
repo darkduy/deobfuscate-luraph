@@ -9,11 +9,23 @@ TRACE_INJECT_POINT = "local T=P[H];"
 TRACE_SNIPPET = "local T=P[H]; if __LURAPH_TRACE then __LURAPH_TRACE(H, T, d, S) end;"
 
 
-def make_traceable(input_code: str) -> str:
+NUM_UNDERSCORE_RE = re.compile(r"(?<![\w.])(0[xX][0-9A-Fa-f_]+|0[bB][01_]+|\d[\d_]*\d)(?![\w.])")
+
+def make_lua_compatible_numbers(code: str) -> str:
+    code = NUM_UNDERSCORE_RE.sub(lambda m: m.group(1).replace("_", ""), code)
+
+    code = re.sub(r"(?<![\w.])0[xX]_*(?![0-9A-Fa-f])", "0", code)
+    code = re.sub(r"(?<![\w.])0[bB]_*(?![01])", "0", code)
+    return code
+
+
+def make_traceable(input_code: str, lua_compatible: bool = False) -> str:
     code = HEADER_RE.sub("", input_code)
     if TRACE_INJECT_POINT not in code:
         raise ValueError("Cannot locate VM dispatch point `local T=P[H];` for this sample")
     code = code.replace(TRACE_INJECT_POINT, TRACE_SNIPPET, 1)
+    if lua_compatible:
+        code = make_lua_compatible_numbers(code)
     prelude = r'''
 local __trace_file = "trace.jsonl"
 local __trace_fh = io.open(__trace_file, "w")
@@ -144,7 +156,7 @@ def lift_trace_to_luau(rows, behaviors):
 
 def cmd_prepare_trace(args):
     src = Path(args.input).read_text(encoding="utf-8", errors="ignore")
-    Path(args.output).write_text(make_traceable(src), encoding="utf-8")
+    Path(args.output).write_text(make_traceable(src, lua_compatible=args.lua_compatible), encoding="utf-8")
     print(f"[+] wrote traceable script: {args.output}")
 
 
@@ -185,6 +197,7 @@ def main():
     p1 = sub.add_parser("prepare-trace")
     p1.add_argument("input")
     p1.add_argument("-o", "--output", default="traceable_main.luau")
+    p1.add_argument("--lua-compatible", action="store_true", help="Normalize underscore numeric literals for standard Lua interpreters")
     p1.set_defaults(func=cmd_prepare_trace)
 
     p2 = sub.add_parser("summarize-trace")

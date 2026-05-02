@@ -5,6 +5,8 @@ OK làm full theo pipeline liền mạch:
 ## 1) Prepare trace
 ```bash
 python3 deobfuscate_luraph.py prepare-trace main.luau -o traceable_main.luau
+# nếu chạy bằng lua chuẩn (không phải luau), thêm --lua-compatible
+python3 deobfuscate_luraph.py prepare-trace main.luau -o traceable_main.lua --lua-compatible
 ```
 
 ## 2) Run `traceable_main.luau` trong Lua/Luau runtime
