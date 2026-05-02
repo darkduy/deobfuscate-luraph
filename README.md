@@ -1,58 +1,39 @@
-# Luraph Devirtualization Pipeline (Python)
+# Luraph Full Devirtualization Pipeline (Python)
 
-Repo này cung cấp tool `deobfuscate_luraph.py` để đi theo pipeline devirtualization VM Luraph.
+OK làm full theo pipeline liền mạch:
 
-## Yêu cầu
-- Python 3.9+
-- File đầu vào: script Luraph (ví dụ `main.luau`)
-
-## Cách dùng nhanh
-
-### Bước 1: Tạo file traceable
+## 1) Prepare trace
 ```bash
 python3 deobfuscate_luraph.py prepare-trace main.luau -o traceable_main.luau
 ```
-Lệnh này inject hook trace vào điểm dispatch VM (`local T=P[H];`).
 
-### Bước 2: Chạy file traceable bằng Lua/Luau runtime
-Sau khi chạy `traceable_main.luau`, bạn sẽ có file `trace.jsonl`.
+## 2) Run `traceable_main.luau` trong Lua/Luau runtime
+Sinh ra `trace.jsonl`.
 
-### Bước 3: Tóm tắt trace
+## 3) Summarize trace
 ```bash
 python3 deobfuscate_luraph.py summarize-trace trace.jsonl -o trace_summary.json
 ```
-Output:
-- `events`
-- `unique_pc`
-- `op_hist`
 
-### Bước 4: Suy luận hành vi opcode
+## 4) Infer opcode behaviors
 ```bash
 python3 deobfuscate_luraph.py infer-opcodes trace.jsonl -o opcode_inferred.json
 ```
-Mỗi opcode có các chỉ số:
-- `jump_ratio`
-- `fallthrough_ratio`
-- `reg_change_ratio`
-- `guess`: `JUMP_OR_BRANCH` / `ALU_OR_LOAD` / `CALL_OR_MISC`
 
-### Bước 5: Sinh lifter template
+## 5) Emit handler template
 ```bash
 python3 deobfuscate_luraph.py emit-lifter opcode_inferred.json -o lifter_template.luau
 ```
-File `lifter_template.luau` chứa handler stub cho từng opcode để bạn điền semantics.
 
----
-
-## CLI help
+## 6) Lift trace -> devirtualized Luau
 ```bash
-python3 deobfuscate_luraph.py --help
-python3 deobfuscate_luraph.py prepare-trace --help
-python3 deobfuscate_luraph.py summarize-trace --help
-python3 deobfuscate_luraph.py infer-opcodes --help
-python3 deobfuscate_luraph.py emit-lifter --help
+python3 deobfuscate_luraph.py lift-trace trace.jsonl -i opcode_inferred.json -o devirtualized_from_trace.luau
 ```
+Bước này tạo code Luau devirtualized từ execution trace (concrete execution) với:
+- label theo PC
+- annotation opcode/guess
+- goto theo nhánh runtime thực tế
 
-## Lưu ý
-- Đây là pipeline hỗ trợ quá trình full devirtualization, không tự động reconstruct 100% semantics ngay lập tức.
-- Chất lượng infer phụ thuộc vào độ đầy đủ của `trace.jsonl`.
+## Lưu ý quan trọng
+- `devirtualized_from_trace.luau` là kết quả lift theo **trace đã chạy** (path-sensitive), không tự động cover mọi path chưa execute.
+- Để gần “full” hơn, cần thu nhiều trace với input/path khác nhau rồi merge.
