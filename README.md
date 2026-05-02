@@ -1,16 +1,16 @@
-# Luraph Full Devirtualization Pipeline (continue all-in)
+# Luraph Full Devirtualization Pipeline (Python)
 
-Làm tiếp luôn theo hướng full, không dừng ở trace:
+OK làm full theo pipeline liền mạch:
 
 ## 1) Prepare trace
 ```bash
 python3 deobfuscate_luraph.py prepare-trace main.luau -o traceable_main.luau
 ```
 
-## 2) Run traceable script in Lua/Luau
+## 2) Run `traceable_main.luau` trong Lua/Luau runtime
 Sinh ra `trace.jsonl`.
 
-## 3) Summary
+## 3) Summarize trace
 ```bash
 python3 deobfuscate_luraph.py summarize-trace trace.jsonl -o trace_summary.json
 ```
@@ -19,13 +19,21 @@ python3 deobfuscate_luraph.py summarize-trace trace.jsonl -o trace_summary.json
 ```bash
 python3 deobfuscate_luraph.py infer-opcodes trace.jsonl -o opcode_inferred.json
 ```
-Heuristic classify mỗi opcode: `JUMP_OR_BRANCH`, `ALU_OR_LOAD`, `CALL_OR_MISC`.
 
-## 5) Emit lifter template
+## 5) Emit handler template
 ```bash
 python3 deobfuscate_luraph.py emit-lifter opcode_inferred.json -o lifter_template.luau
 ```
-Tạo skeleton handler cho từng opcode để bạn điền semantics và hoàn thiện devirtualizer.
 
----
-Đây là pipeline end-to-end để đi **hết** full devirtualization thực tế.
+## 6) Lift trace -> devirtualized Luau
+```bash
+python3 deobfuscate_luraph.py lift-trace trace.jsonl -i opcode_inferred.json -o devirtualized_from_trace.luau
+```
+Bước này tạo code Luau devirtualized từ execution trace (concrete execution) với:
+- label theo PC
+- annotation opcode/guess
+- goto theo nhánh runtime thực tế
+
+## Lưu ý quan trọng
+- `devirtualized_from_trace.luau` là kết quả lift theo **trace đã chạy** (path-sensitive), không tự động cover mọi path chưa execute.
+- Để gần “full” hơn, cần thu nhiều trace với input/path khác nhau rồi merge.

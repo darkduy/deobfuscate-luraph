@@ -55,19 +55,17 @@ def summarize_trace(rows):
 
 
 def infer_opcode_behaviors(rows):
-    # heuristic behavior inference from pc/op transitions
     by_op = defaultdict(list)
     for i in range(len(rows)-1):
         cur, nxt = rows[i], rows[i+1]
-        if cur["op"] != nxt["op"] or cur["pc"] != nxt["pc"]:
-            by_op[cur["op"]].append((cur, nxt))
+        by_op[cur["op"]].append((cur, nxt))
 
     behaviors = {}
     for op, pairs in by_op.items():
         jumps = 0
         falls = 0
         reg_writes = 0
-        for cur, nxt in pairs[:3000]:
+        for cur, nxt in pairs[:5000]:
             try:
                 pc_cur = int(float(cur["pc"]))
                 pc_nxt = int(float(nxt["pc"]))
@@ -91,25 +89,56 @@ def infer_opcode_behaviors(rows):
 
 
 def emit_lifter_template(behaviors: dict, output: Path):
-    lines = [
-        "-- Auto-generated Luraph VM lifter template from trace",
-        "local handlers = {}",
-        "",
-    ]
+    lines = ["-- Auto-generated Luraph VM lifter template from trace", "local handlers = {}", ""]
     for op, info in sorted(behaviors.items(), key=lambda kv: float(kv[0])):
         lines.append(f"-- op={op} samples={info['samples']} jump_ratio={info['jump_ratio']:.2f} reg_change={info['reg_change_ratio']:.2f} guess={info['guess']}")
         lines.append(f"handlers[{op}] = function(state)")
         lines.append("    -- TODO: implement semantic lift for this opcode")
-        if info["guess"] == "JUMP_OR_BRANCH":
-            lines.append("    -- expected: modifies state.pc non-linearly")
-        elif info["guess"] == "ALU_OR_LOAD":
-            lines.append("    -- expected: writes one or more registers")
-        else:
-            lines.append("    -- expected: call/return/table/metamethod behavior")
-        lines.append("end")
-        lines.append("")
+        lines.append("end\n")
     lines.append("return handlers")
     output.write_text("\n".join(lines), encoding="utf-8")
+
+
+def lift_trace_to_luau(rows, behaviors):
+    """Generate devirtualized linear Luau-like code from runtime trace.
+
+    This is concrete-trace lifting: produces readable control-flow skeleton and
+    opcode-level operations with observed register snapshots.
+    """
+    lines = [
+        "-- devirtualized from runtime trace (concrete execution)",
+        "local function devirtualized()",
+    ]
+
+    seen_labels = set()
+    for i, cur in enumerate(rows):
+        pc = cur["pc"]
+        op = cur["op"]
+        guess = behaviors.get(op, {}).get("guess", "UNKNOWN")
+
+        label = f"L_{re.sub(r'[^0-9A-Za-z_]', '_', pc)}"
+        if label not in seen_labels:
+            lines.append(f"::{label}::")
+            seen_labels.add(label)
+
+        lines.append(f"    -- op {op} ({guess})")
+        lines.append(f"    -- r0={cur['r0']!r}, r1={cur['r1']!r}, r2={cur['r2']!r}")
+
+        if i + 1 < len(rows):
+            nxt = rows[i+1]
+            try:
+                pc_cur = int(float(pc))
+                pc_nxt = int(float(nxt["pc"]))
+                if pc_nxt != pc_cur + 1:
+                    lines.append(f"    goto L_{re.sub(r'[^0-9A-Za-z_]', '_', nxt['pc'])}")
+            except Exception:
+                pass
+
+        lines.append("")
+
+    lines.append("end")
+    lines.append("return devirtualized")
+    return "\n".join(lines) + "\n"
 
 
 def cmd_prepare_trace(args):
@@ -137,6 +166,17 @@ def cmd_emit_lifter(args):
     print(f"[+] wrote: {args.output}")
 
 
+def cmd_lift_trace(args):
+    rows = load_trace(Path(args.trace))
+    if args.inferred and Path(args.inferred).exists():
+        behaviors = json.loads(Path(args.inferred).read_text(encoding="utf-8"))
+    else:
+        behaviors = infer_opcode_behaviors(rows)
+    out = lift_trace_to_luau(rows, behaviors)
+    Path(args.output).write_text(out, encoding="utf-8")
+    print(f"[+] wrote: {args.output}")
+
+
 def main():
     ap = argparse.ArgumentParser(description="Luraph full devirtualization helper")
     sub = ap.add_subparsers(required=True)
@@ -160,6 +200,12 @@ def main():
     p4.add_argument("inferred")
     p4.add_argument("-o", "--output", default="lifter_template.luau")
     p4.set_defaults(func=cmd_emit_lifter)
+
+    p5 = sub.add_parser("lift-trace")
+    p5.add_argument("trace")
+    p5.add_argument("-i", "--inferred", default="opcode_inferred.json")
+    p5.add_argument("-o", "--output", default="devirtualized_from_trace.luau")
+    p5.set_defaults(func=cmd_lift_trace)
 
     args = ap.parse_args()
     args.func(args)
